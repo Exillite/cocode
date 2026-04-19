@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Регистрация - COCODE</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="page-shell auth-shell">
+        <div class="auth-form">
+            <div class="hero-title">
+                <div class="eyebrow">Realtime Rooms</div>
+                <h1>COCODE</h1>
+                <p>Создайте аккаунт и откройте доступ к комнатам, общему редактору и сохранению проектов.</p>
+            </div>
+
+            <h2>Регистрация</h2>
+            <p class="form-caption">Новый профиль создаётся за пару секунд и сразу готов к работе.</p>
+
+            <input type="text" id="username" placeholder="Логин" autocomplete="username" />
+            <input type="password" id="password" placeholder="Пароль" autocomplete="new-password" />
+            <input type="password" id="password-confirm" placeholder="Подтвердите пароль" autocomplete="new-password" />
+
+            <button id="register-btn">Зарегистрироваться</button>
+
+            <div id="error-message" class="error-message"></div>
+            <div id="success-message" class="success-message"></div>
+
+            <div style="text-align: center; margin-top: 20px;">
+                <p>Уже есть аккаунт? <a href="/static/login.html" class="nav-link">Войти</a></p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/common.js"></script>
+    <script>
+        // Перенаправить, если уже залогинен
+        if (isLoggedIn()) {
+            redirectToRooms();
+        }
+
+        document.getElementById('register-btn').addEventListener('click', async function() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const passwordConfirm = document.getElementById('password-confirm').value;
+
+            hideError('error-message');
+            hideSuccess('success-message');
+
+            if (!username || !password || !passwordConfirm) {
+                showError('error-message', 'Пожалуйста, заполните все поля');
+                return;
+            }
+
+            if (username.length < 3) {
+                showError('error-message', 'Логин должен быть не менее 3 символов');
+                return;
+            }
+
+            if (password.length < 6) {
+                showError('error-message', 'Пароль должен быть не менее 6 символов');
+                return;
+            }
+
+            if (password !== passwordConfirm) {
+                showError('error-message', 'Пароли не совпадают');
+                return;
+            }
+
+            try {
+                const data = await register(username, password);
+                
+                if (data.message) {
+                    showSuccess('success-message', 'Регистрация успешна! Перенаправляем на вход...');
+                    setTimeout(() => {
+                        window.location.href = '/static/login.html';
+                    }, 1200);
+                } else if (data.detail) {
+                    showError('error-message', data.detail);
+                } else {
+                    showError('error-message', 'Ошибка регистрации');
+                }
+            } catch (error) {
+                showError('error-message', 'Ошибка при регистрации: ' + error.message);
+            }
+        });
+
+        // Регистрация по Enter
+        document.getElementById('password-confirm').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('register-btn').click();
+            }
+        });
+    </script>
+</body>
+</html>

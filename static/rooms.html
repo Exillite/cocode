@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мои комнаты - COCODE</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="page-shell">
+        <div class="navbar">
+            <h1>COCODE</h1>
+            <div class="navbar-right">
+                <span id="username-display"></span>
+                <button id="logout-btn">Выйти</button>
+            </div>
+        </div>
+
+        <div class="rooms-container">
+            <div class="rooms-hero">
+                <div class="rooms-hero-copy">
+                    <div class="rooms-hero-kicker">Workspace Hub</div>
+                    <h2>Мои комнаты</h2>
+                    <p>Создавайте новые рабочие пространства, возвращайтесь к сохранённым проектам и подключайтесь к комнатам по коду.</p>
+                </div>
+                <div hidden class="rooms-hero-stats">
+                    <div class="rooms-stat-card">
+                        <span class="rooms-stat-label">Комнат доступно</span>
+                        <strong id="rooms-count">0</strong>
+                    </div>
+                    <div hidden class="rooms-stat-card">
+                        <span class="rooms-stat-label">Быстрое действие</span>
+                        <strong>Создать или подключиться</strong>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section-header rooms-toolbar">
+                <div>
+                    <h3>Ваши пространства</h3>
+                    <p>Откройте нужную комнату или добавьте новую в один клик.</p>
+                </div>
+                <div class="header-actions">
+                    <button id="open-join-room-btn" class="secondary-button">Подключиться по коду</button>
+                    <button id="create-room-btn">+ Создать новую комнату</button>
+                </div>
+            </div>
+
+            <div id="rooms-list" class="rooms-list"></div>
+            
+            <div id="no-rooms-message" class="empty-state" style="display: none;">
+                <p>У вас еще нет комнат</p>
+                <p>Создайте первую комнату, чтобы начать сотрудничество</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно создания комнаты -->
+    <div id="create-room-modal" class="modal-overlay">
+        <div class="modal-card">
+            <h2>Создать новую комнату</h2>
+            <p style="margin: 10px 0 14px;">Новая комната будет доступна в вашем списке сразу после создания.</p>
+            <input type="text" id="new-room-name" placeholder="Название комнаты" />
+            <div id="modal-error" class="error-message"></div>
+            <div class="stack-actions">
+                <button id="modal-create-btn">Создать</button>
+                <button id="modal-cancel-btn" class="secondary-button">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="join-room-modal" class="modal-overlay">
+        <div class="modal-card">
+            <h2>Подключиться к комнате</h2>
+            <p style="margin: 10px 0 14px;">Введите код комнаты, чтобы добавить её в ваш список и открыть редактор.</p>
+            <input type="text" id="join-room-id" placeholder="Код комнаты" />
+            <div id="join-room-error" class="error-message"></div>
+            <div class="stack-actions">
+                <button id="join-room-btn">Подключиться</button>
+                <button id="join-room-cancel-btn" class="secondary-button">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/common.js"></script>
+    <script>
+        // Проверка авторизации
+        if (!checkAuth(true)) {
+            redirectToLogin();
+        }
+
+        // Загрузка списка комнат
+        async function loadRooms() {
+            try {
+                const rooms = await getRooms();
+                const roomsList = document.getElementById('rooms-list');
+                const noRoomsMsg = document.getElementById('no-rooms-message');
+                
+                if (rooms.length === 0) {
+                    roomsList.innerHTML = '';
+                    noRoomsMsg.style.display = 'block';
+                } else {
+                    noRoomsMsg.style.display = 'none';
+                    document.getElementById('rooms-count').textContent = rooms.length;
+                    roomsList.innerHTML = rooms.map(room => `
+                        <a href="/static/room.html?room=${room.id}" class="room-card">
+                            <div class="room-card-top">
+                                <div class="room-card-badge">ROOM</div>
+                                <div class="room-card-arrow">Open</div>
+                            </div>
+                            <div class="room-name">${room.name}</div>
+                            <div class="room-meta">ID: ${room.id}</div>
+                        </a>
+                    `).join('');
+                }
+                if (rooms.length === 0) {
+                    document.getElementById('rooms-count').textContent = '0';
+                }
+            } catch (error) {
+                console.error('Error loading rooms:', error);
+            }
+        }
+
+        // Загрузка имени пользователя
+        function loadUsername() {
+            const token = getToken();
+            if (token) {
+                try {
+                    const payload = JSON.parse(atob(token.split('.')[1]));
+                    document.getElementById('username-display').textContent = 'Пользователь: ' + payload.sub;
+                } catch (error) {
+                    console.error('Error parsing token:', error);
+                }
+            }
+        }
+
+        // Создание комнаты
+        document.getElementById('create-room-btn').addEventListener('click', function() {
+            document.getElementById('create-room-modal').style.display = 'block';
+            document.getElementById('new-room-name').value = '';
+            hideError('modal-error');
+        });
+
+        document.getElementById('open-join-room-btn').addEventListener('click', function() {
+            document.getElementById('join-room-modal').style.display = 'block';
+            document.getElementById('join-room-id').value = '';
+            hideError('join-room-error');
+        });
+
+        async function joinExistingRoom() {
+            const roomId = document.getElementById('join-room-id').value.trim();
+            hideError('join-room-error');
+
+            if (!roomId) {
+                showError('join-room-error', 'Введите ID комнаты');
+                return;
+            }
+
+            try {
+                const response = await fetch('/join-room', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + getToken()
+                    },
+                    body: JSON.stringify({ room_id: roomId })
+                });
+
+                if (!response.ok) {
+                    showError('join-room-error', 'Комната не найдена или недоступна');
+                    return;
+                }
+
+                document.getElementById('join-room-modal').style.display = 'none';
+                loadRooms();
+                redirectToRoom(roomId);
+            } catch (error) {
+                showError('join-room-error', 'Не удалось подключиться к комнате');
+            }
+        }
+
+        document.getElementById('modal-cancel-btn').addEventListener('click', function() {
+            document.getElementById('create-room-modal').style.display = 'none';
+        });
+
+        document.getElementById('modal-create-btn').addEventListener('click', async function() {
+            const name = document.getElementById('new-room-name').value.trim();
+            hideError('modal-error');
+
+            if (!name) {
+                showError('modal-error', 'Пожалуйста, введите название комнаты');
+                return;
+            }
+
+            try {
+                const data = await createRoom(name);
+                if (data.id) {
+                    document.getElementById('create-room-modal').style.display = 'none';
+                    loadRooms();
+                } else {
+                    showError('modal-error', 'Ошибка создания комнаты');
+                }
+            } catch (error) {
+                showError('modal-error', 'Ошибка: ' + error.message);
+            }
+        });
+
+        // Создание комнаты по Enter
+        document.getElementById('new-room-name').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('modal-create-btn').click();
+            }
+        });
+
+        document.getElementById('join-room-btn').addEventListener('click', joinExistingRoom);
+
+        document.getElementById('join-room-cancel-btn').addEventListener('click', function() {
+            document.getElementById('join-room-modal').style.display = 'none';
+        });
+
+        document.getElementById('join-room-id').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                joinExistingRoom();
+            }
+        });
+
+        // Выход
+        document.getElementById('logout-btn').addEventListener('click', function() {
+            removeToken();
+            redirectToLogin();
+        });
+
+        // Закрытие модального окна при клике вне его
+        document.getElementById('create-room-modal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                this.style.display = 'none';
+            }
+        });
+
+        document.getElementById('join-room-modal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                this.style.display = 'none';
+            }
+        });
+
+        // Загрузка данных при открытии страницы
+        loadRooms();
+        loadUsername();
+    </script>
+</body>
+</html>

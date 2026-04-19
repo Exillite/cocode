@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Редактор - COCODE</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- CodeMirror CSS -->
+    <link rel="stylesheet" href="/static/codemirror/codemirror.min.css">
+    <link rel="stylesheet" href="/static/codemirror/dracula.min.css">
+</head>
+<body class="room-page">
+    <div class="room-ide" id="room-ide">
+        <header class="ide-topbar">
+            <div class="ide-topbar-left">
+                <div class="ide-app-brand">
+                    <span class="ide-app-dot"></span>
+                    <span class="ide-app-name">COCODE</span>
+                </div>
+                <div class="ide-room-meta">
+                    <div class="ide-room-label">Комната</div>
+                    <h1 id="room-title">Загрузка комнаты...</h1>
+                </div>
+            </div>
+            <div class="ide-topbar-actions">
+                <button id="save-scripts" class="ide-action-button">Сохранить</button>
+                <button id="share-room-btn" class="ide-action-button ide-action-button-secondary">Поделиться</button>
+                <a href="/static/rooms.html" class="ide-link-button">К комнатам</a>
+                <button hidden id="logout-btn" class="ide-action-button ide-action-button-danger">Выйти</button>
+            </div>
+        </header>
+
+        <main class="ide-workspace" id="ide-workspace">
+            <aside class="ide-pane ide-files-pane" id="files-pane">
+                <div class="ide-pane-header">
+                    <div>
+                        <div class="ide-pane-kicker">Explorer</div>
+                        <h2>Файлы</h2>
+                    </div>
+                    <button id="new-script" class="ide-mini-button">+ Новый</button>
+                </div>
+                <div class="ide-pane-scroll">
+                    <div class="ide-files-meta">
+                        <span class="ide-files-section">Workspace</span>
+                        <span class="ide-files-count" id="scripts-count">0 файлов</span>
+                    </div>
+                    <div id="scripts-list" class="scripts-list"></div>
+                    <div id="no-scripts-message">
+                        <p>Нет ни одного скрипта</p>
+                    </div>
+                </div>
+            </aside>
+
+            <div class="ide-resizer" data-resize="files" aria-hidden="true"></div>
+
+            <section class="ide-pane ide-editor-pane" id="editor-pane">
+                <div class="ide-pane-header ide-editor-header">
+                    <div>
+                        <div class="ide-pane-kicker">Editor</div>
+                        <h2 id="editor-file-name">main.py</h2>
+                    </div>
+                </div>
+                <div class="ide-editor-surface">
+                    <div id="code-editor"></div>
+                </div>
+            </section>
+
+            <div class="ide-resizer" data-resize="runner" aria-hidden="true"></div>
+
+            <aside class="ide-pane ide-run-pane" id="execution-section">
+                <div class="ide-pane-header">
+                    <div>
+                        <div class="ide-pane-kicker">Runner</div>
+                        <h2>Запуск кода</h2>
+                    </div>
+                </div>
+                <div class="ide-run-actions">
+                    <button id="run-button">Запустить</button>
+                    <button id="stop-button" class="stop" disabled>Остановить</button>
+                </div>
+                <div class="ide-run-status" id="run-status">Ожидание запуска</div>
+                <div class="ide-terminal-wrap">
+                    <div class="ide-terminal-title">Терминал</div>
+                    <div id="terminal-window"></div>
+                    <input id="terminal-input" type="text" class="terminal-input" placeholder="Введите текст и нажмите Enter" autocomplete="off" />
+                </div>
+            </aside>
+        </main>
+
+        <footer class="ide-statusbar">
+            <div class="status disconnected" id="status">Подключение...</div>
+        </footer>
+    </div>
+
+    <div id="share-room-modal" class="modal-overlay">
+        <div class="modal-card ide-share-modal">
+            <h2>Поделиться комнатой</h2>
+            <p>Отправьте этот код другому участнику, чтобы он смог открыть комнату.</p>
+            <div class="ide-share-code" id="share-room-code"></div>
+            <div class="stack-actions">
+                <button id="copy-share-code">Скопировать код</button>
+                <button id="close-share-modal" class="secondary-button">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CodeMirror JS -->
+    <script src="/static/codemirror/codemirror.min.js"></script>
+    <script src="/static/codemirror/python.min.js"></script>
+    <script src="/static/js/common.js"></script>
+    
+    <script>
+        // Проверка авторизации
+        if (!checkAuth(true)) {
+            redirectToLogin();
+        }
+
+        // Переменные состояния
+        let editor;
+        let ws;
+        let ignoreChanges = false;
+        let currentRoom = null;
+        let scripts = {};
+        let currentScript = "main.py";
+        let processRunning = false;
+        const roomIde = document.getElementById('room-ide');
+
+        // Получение ID комнаты из URL
+        const urlParams = new URLSearchParams(window.location.search);
+        currentRoom = urlParams.get('room');
+
+        if (!currentRoom) {
+            redirectToRooms();
+        }
+
+        // Инициализация редактора
+        function initEditor() {
+            editor = CodeMirror(document.getElementById('code-editor'), {
+                value: '# Введите ваш Python код здесь\nprint(\'Hello, World!\')',
+                mode: 'python',
+                theme: 'dracula',
+                lineNumbers: true,
+                indentUnit: 4,
+                smartIndent: true,
+                lineWrapping: true,
+                autofocus: true
+            });
+
+            editor.on('change', function(cm, change) {
+                if (!ignoreChanges && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        script: currentScript,
+                        code: cm.getValue()
+                    }));
+                }
+            });
+
+            setTimeout(() => editor.refresh(), 0);
+        }
+
+        // Подключение к WebSocket
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${currentRoom}`);
+
+            ws.onopen = function(event) {
+                updateConnectionStatus('Подключено к серверу', true);
+            };
+
+            ws.onmessage = function(event) {
+                handleWebSocketMessage(JSON.parse(event.data));
+            };
+
+            ws.onclose = function(event) {
+                updateConnectionStatus('Нет соединения с сервером. Переподключение...', false);
+                setTimeout(connect, 1000);
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleWebSocketMessage(data) {
+            if (data.scripts) {
+                scripts = data.scripts;
+                updateScriptsList();
+                updateEditorVisibility();
+                if (!(currentScript in scripts)) {
+                    currentScript = Object.keys(scripts)[0] || "";
+                }
+                if (currentScript) {
+                    loadScript(currentScript);
+                }
+            }
+            if (data.script && data.code !== undefined) {
+                scripts[data.script] = data.code;
+                if (data.script === currentScript) {
+                    loadScript(currentScript);
+                }
+                updateScriptsList();
+            }
+            if (data.type === 'script_deleted') {
+                if (data.script === currentScript) {
+                    currentScript = Object.keys(scripts)[0] || "";
+                    if (currentScript) {
+                        loadScript(currentScript);
+                    }
+                }
+                updateScriptsList();
+                updateEditorVisibility();
+            }
+            if (data.type === 'script_renamed') {
+                if (currentScript === data.old_name) {
+                    currentScript = data.new_name;
+                }
+                updateScriptsList();
+                updateEditorVisibility();
+                loadScript(currentScript);
+            }
+            if (data.type === 'process_started') {
+                processRunning = true;
+                updateRunStatus('Выполняется: ' + data.script);
+                document.getElementById('run-button').disabled = true;
+                document.getElementById('stop-button').disabled = false;
+                appendTerminalText('[Запуск скрипта ' + data.script + ']\n', 'system');
+            }
+            if (data.type === 'process_output') {
+                appendTerminalText(data.text, 'output');
+            }
+            if (data.type === 'process_finished') {
+                processRunning = false;
+                updateRunStatus('Завершено: код ' + data.returncode);
+                document.getElementById('run-button').disabled = false;
+                document.getElementById('stop-button').disabled = true;
+                appendTerminalText('\n[Процесс завершён, код ' + data.returncode + ']\n', 'system');
+            }
+            if (data.type === 'process_error') {
+                processRunning = false;
+                updateRunStatus('Ошибка процесса');
+                document.getElementById('run-button').disabled = false;
+                document.getElementById('stop-button').disabled = true;
+                appendTerminalText('[Ошибка] ' + data.message + '\n', 'system');
+            }
+            if (data.type === 'saved') {
+                uiToast('Скрипты сохранены', 'success');
+            }
+        }
+
+        function updateScriptsList() {
+            const list = document.getElementById('scripts-list');
+            list.innerHTML = '';
+            const scriptNames = Object.keys(scripts);
+            document.getElementById('scripts-count').textContent = `${scriptNames.length} ${getScriptCountLabel(scriptNames.length)}`;
+            
+            for (const name in scripts) {
+                const div = document.createElement('div');
+                div.className = 'script-item';
+                if (name === currentScript) {
+                    div.classList.add('active');
+                }
+                div.addEventListener('click', function() {
+                    selectScript(name);
+                });
+
+                const fileMain = document.createElement('div');
+                fileMain.className = 'script-main';
+
+                const fileIcon = document.createElement('span');
+                fileIcon.className = 'script-icon';
+                fileIcon.textContent = '</>';
+                fileMain.appendChild(fileIcon);
+
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'script-name';
+                nameDiv.textContent = name;
+                fileMain.appendChild(nameDiv);
+                div.appendChild(fileMain);
+
+                const buttonsDiv = document.createElement('div');
+                buttonsDiv.className = 'script-buttons';
+
+                const renameBtn = document.createElement('button');
+                renameBtn.textContent = 'Переименовать';
+                renameBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    handleRenameScript(name);
+                });
+                buttonsDiv.appendChild(renameBtn);
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = 'Удалить';
+                deleteBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    handleDeleteScript(name);
+                });
+                buttonsDiv.appendChild(deleteBtn);
+
+                div.appendChild(buttonsDiv);
+                list.appendChild(div);
+            }
+        }
+
+        function getScriptCountLabel(count) {
+            if (count % 10 === 1 && count % 100 !== 11) {
+                return 'файл';
+            }
+            if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) {
+                return 'файла';
+            }
+            return 'файлов';
+        }
+
+        function selectScript(name) {
+            currentScript = name;
+            loadScript(name);
+            updateScriptsList();
+            updateEditorVisibility();
+            updateEditorFileName();
+        }
+
+        function loadScript(name) {
+            if (name in scripts) {
+                const cursor = editor.getCursor();
+                ignoreChanges = true;
+                editor.setValue(scripts[name]);
+                editor.setCursor(cursor);
+                ignoreChanges = false;
+            } else {
+                ignoreChanges = true;
+                editor.setValue('');
+                ignoreChanges = false;
+            }
+        }
+
+        function updateEditorVisibility() {
+            const hasScripts = Object.keys(scripts).length > 0;
+            document.getElementById('code-editor').style.display = hasScripts ? 'block' : 'none';
+            document.getElementById('execution-section').style.display = hasScripts ? 'flex' : 'none';
+            document.getElementById('no-scripts-message').style.display = hasScripts ? 'none' : 'block';
+            document.getElementById('run-button').disabled = !hasScripts || processRunning;
+            document.getElementById('stop-button').disabled = !processRunning;
+            updateEditorFileName();
+            if (editor) {
+                setTimeout(() => editor.refresh(), 0);
+            }
+        }
+
+        function updateEditorFileName() {
+            document.getElementById('editor-file-name').textContent = currentScript || 'Нет открытого файла';
+        }
+
+        function stripPyExtension(filename) {
+            return filename.endsWith('.py') ? filename.slice(0, -3) : filename;
+        }
+
+        function buildPythonFilename(baseName) {
+            const trimmed = baseName.trim();
+            if (!trimmed) {
+                return '';
+            }
+            return `${trimmed}.py`;
+        }
+
+        async function handleRenameScript(name) {
+            const newBaseName = await uiPrompt('Введите новое имя файла без расширения. Расширение .py сохраняется автоматически.', {
+                title: 'Переименовать скрипт',
+                value: stripPyExtension(name),
+                placeholder: 'example',
+                confirmText: 'Переименовать'
+            });
+            const newName = newBaseName === null ? null : buildPythonFilename(newBaseName);
+
+            if (newName && newName !== name && !scripts[newName] && name in scripts) {
+                fetch(`/room/${currentRoom}/script/${name}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + getToken()
+                    },
+                    body: JSON.stringify({new_name: newName})
+                }).then(() => {
+                    scripts[newName] = scripts[name];
+                    delete scripts[name];
+                    if (currentScript === name) {
+                        currentScript = newName;
+                    }
+                    updateScriptsList();
+                    loadScript(currentScript);
+                    updateEditorFileName();
+                }).catch(() => {
+                    uiToast('Ошибка переименования', 'error');
+                });
+            } else if (newName === name) {
+                uiToast('Имя не изменилось', 'warning');
+            } else if (newName === '') {
+                uiToast('Имя файла не может быть пустым', 'warning');
+            } else if (scripts[newName]) {
+                uiToast('Скрипт с таким именем уже существует', 'warning');
+            }
+        }
+
+        async function handleDeleteScript(name) {
+            const confirmed = name in scripts && await uiConfirm(`Удалить скрипт ${name}?`, {
+                title: 'Удаление скрипта',
+                confirmText: 'Удалить',
+                danger: true
+            });
+
+            if (confirmed) {
+                fetch(`/room/${currentRoom}/script/${name}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': 'Bearer ' + getToken()
+                    }
+                }).then(() => {
+                    delete scripts[name];
+                    if (currentScript === name) {
+                        currentScript = Object.keys(scripts)[0] || "";
+                    }
+                    updateScriptsList();
+                    loadScript(currentScript);
+                    updateEditorVisibility();
+                }).catch(() => {
+                    uiToast('Ошибка удаления', 'error');
+                });
+            }
+        }
+
+        function appendTerminalText(text, type = 'output') {
+            const terminal = document.getElementById('terminal-window');
+            const span = document.createElement('span');
+            span.className = 'terminal-' + type;
+            span.textContent = text;
+            terminal.appendChild(span);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function updateConnectionStatus(message, connected) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + (connected ? 'connected' : 'disconnected');
+        }
+
+        function updateRunStatus(message) {
+            document.getElementById('run-status').textContent = message;
+        }
+
+        // Обработчики кнопок
+        document.getElementById('new-script').addEventListener('click', async function() {
+            const newBaseName = await uiPrompt('Введите имя нового скрипта без расширения. Файл будет создан с расширением .py.', {
+                title: 'Новый скрипт',
+                value: 'script',
+                placeholder: 'script',
+                confirmText: 'Создать'
+            });
+            const name = newBaseName === null ? null : buildPythonFilename(newBaseName);
+
+            if (name && !scripts[name]) {
+                scripts[name] = '# Новый скрипт\n';
+                currentScript = name;
+                loadScript(name);
+                updateScriptsList();
+                updateEditorVisibility();
+                ws.send(JSON.stringify({
+                    script: name,
+                    code: scripts[name]
+                }));
+            } else if (name === '') {
+                uiToast('Имя файла не может быть пустым', 'warning');
+            } else if (scripts[name]) {
+                uiToast('Скрипт с таким именем уже существует', 'warning');
+            }
+        });
+
+        document.getElementById('save-scripts').addEventListener('click', function() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'save'
+                }));
+            }
+        });
+
+        document.getElementById('terminal-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const text = this.value;
+                if (!processRunning) {
+                    appendTerminalText('[Нет активного процесса]\n', 'system');
+                } else if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'stdin',
+                        input: text + '\n'
+                    }));
+                    appendTerminalText(text + '\n', 'input-text');
+                }
+                this.value = '';
+            }
+        });
+
+        document.getElementById('run-button').addEventListener('click', function() {
+            if (!currentScript) {
+                uiToast('Выберите или создайте скрипт для запуска', 'warning');
+                return;
+            }
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                uiToast('Нет соединения с сервером', 'error');
+                return;
+            }
+            document.getElementById('terminal-window').textContent = '';
+            ws.send(JSON.stringify({
+                type: 'run_script',
+                script: currentScript
+            }));
+            updateRunStatus('Запуск...');
+            processRunning = true;
+            document.getElementById('run-button').disabled = true;
+        });
+
+        document.getElementById('stop-button').addEventListener('click', function() {
+            if (!processRunning) {
+                return;
+            }
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                uiToast('Нет соединения с сервером', 'error');
+                return;
+            }
+            ws.send(JSON.stringify({
+                type: 'stop_script'
+            }));
+            updateRunStatus('Остановка...');
+            document.getElementById('stop-button').disabled = true;
+        });
+
+        document.getElementById('logout-btn').addEventListener('click', function() {
+            removeToken();
+            redirectToLogin();
+        });
+
+        document.getElementById('share-room-btn').addEventListener('click', function() {
+            document.getElementById('share-room-code').textContent = currentRoom || '';
+            document.getElementById('share-room-modal').style.display = 'block';
+        });
+
+        document.getElementById('close-share-modal').addEventListener('click', function() {
+            document.getElementById('share-room-modal').style.display = 'none';
+        });
+
+        document.getElementById('copy-share-code').addEventListener('click', async function() {
+            try {
+                await navigator.clipboard.writeText(currentRoom || '');
+                uiToast('Код комнаты скопирован', 'success');
+            } catch (error) {
+                uiToast('Не удалось скопировать код', 'error');
+            }
+        });
+
+        document.getElementById('share-room-modal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                this.style.display = 'none';
+            }
+        });
+
+        function initPaneResizers() {
+            const workspace = document.getElementById('ide-workspace');
+            const minFiles = 180;
+            const minRunner = 240;
+
+            workspace.querySelectorAll('.ide-resizer').forEach((resizer) => {
+                resizer.addEventListener('mousedown', function(e) {
+                    e.preventDefault();
+                    const resizeType = resizer.dataset.resize;
+
+                    function onMouseMove(moveEvent) {
+                        const rect = workspace.getBoundingClientRect();
+
+                        if (resizeType === 'files') {
+                            const nextWidth = Math.max(minFiles, Math.min(420, moveEvent.clientX - rect.left));
+                            roomIde.style.setProperty('--files-pane-width', `${nextWidth}px`);
+                        } else {
+                            const nextWidth = Math.max(minRunner, Math.min(520, rect.right - moveEvent.clientX));
+                            roomIde.style.setProperty('--run-pane-width', `${nextWidth}px`);
+                        }
+
+                        if (editor) {
+                            editor.refresh();
+                        }
+                    }
+
+                    function onMouseUp() {
+                        window.removeEventListener('mousemove', onMouseMove);
+                        window.removeEventListener('mouseup', onMouseUp);
+                    }
+
+                    window.addEventListener('mousemove', onMouseMove);
+                    window.addEventListener('mouseup', onMouseUp);
+                });
+            });
+        }
+
+        // Инициализация
+        document.getElementById('room-title').textContent = 'Загрузка комнаты...';
+        
+        // Загрузка информации о комнате
+        fetch(`/room/${currentRoom}`, {
+            headers: {
+                'Authorization': 'Bearer ' + getToken()
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.name) {
+                document.getElementById('room-title').textContent = data.name;
+            }
+        })
+        .catch(error => console.error('Error loading room:', error));
+        
+        initEditor();
+        initPaneResizers();
+        updateEditorFileName();
+        connect();
+
+        window.addEventListener('resize', function() {
+            if (editor) {
+                editor.refresh();
+            }
+        });
+    </script>
+</body>
+</html>

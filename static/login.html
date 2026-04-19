@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Вход - COCODE</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="page-shell auth-shell">
+        <div class="auth-form">
+            <div class="hero-title">
+                <div class="eyebrow">Collaborative Coding</div>
+                <h1>COCODE</h1>
+                <p>Войдите в рабочее пространство и продолжайте работу над комнатами в реальном времени.</p>
+            </div>
+
+            <h2>Вход в систему</h2>
+            <p class="form-caption">Быстрый доступ к вашим комнатам, сохранённым скриптам и совместному редактору.</p>
+
+            <input type="text" id="username" placeholder="Логин" autocomplete="username" />
+            <input type="password" id="password" placeholder="Пароль" autocomplete="current-password" />
+
+            <button id="login-btn">Войти</button>
+
+            <div id="error-message" class="error-message"></div>
+
+            <div style="text-align: center; margin-top: 20px;">
+                <p>Нет аккаунта? <a href="/static/register.html" class="nav-link">Зарегистрироваться</a></p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/common.js"></script>
+    <script>
+        // Перенаправить, если уже залогинен
+        if (isLoggedIn()) {
+            redirectToRooms();
+        }
+
+        document.getElementById('login-btn').addEventListener('click', async function() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                showError('error-message', 'Пожалуйста, заполните все поля');
+                return;
+            }
+
+            try {
+                const data = await login(username, password);
+                
+                if (data.access_token) {
+                    setToken(data.access_token);
+                    redirectToRooms();
+                } else {
+                    showError('error-message', 'Неверный логин или пароль');
+                }
+            } catch (error) {
+                showError('error-message', 'Ошибка при входе: ' + error.message);
+            }
+        });
+
+        // Вход по Enter
+        document.getElementById('password').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('login-btn').click();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COCODE</title>
+    <!-- CodeMirror CSS -->
+    <link rel="stylesheet" href="/static/codemirror/codemirror.min.css">
+    <link rel="stylesheet" href="/static/codemirror/dracula.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        h1 {
+            color: #333;
+        }
+        .CodeMirror {
+            width: 100%;
+            height: 400px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .CodeMirror-gutters {
+            border-right: 1px solid #888 !important;
+        }
+        .status {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        #room-selection {
+            text-align: center;
+            margin: 50px 0;
+        }
+        #room-name {
+            padding: 10px;
+            font-size: 16px;
+            width: 300px;
+            margin: 10px;
+        }
+        #room-code {
+            padding: 10px;
+            font-size: 16px;
+            width: 150px;
+            margin: 10px;
+            text-align: center;
+        }
+        #create-room, #join-room, #run-button, #stop-button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 10px 5px;
+            cursor: pointer;
+        }
+        #stop-button {
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        #stop-button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        #inputs {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            resize: vertical;
+        }
+        #output {
+            width: 100%;
+            min-height: 100px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+        }
+        #terminal-window {
+            width: 100%;
+            min-height: 200px;
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background-color: #111;
+            color: #d4d4d4;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            overflow-y: auto;
+        }
+        .terminal-system {
+            color: #82aaff;
+        }
+        .terminal-output {
+            color: #c3e88d;
+        }
+        .terminal-input {
+            color: #ffcb6b;
+        }
+    </style>
+</head>
+<body>
+    <h1>COCODE</h1>
+    <div id="auth-section">
+        <h2>Вход</h2>
+        <input type="text" id="login-username" placeholder="Логин" />
+        <input type="password" id="login-password" placeholder="Пароль" />
+        <button id="login-btn">Войти</button>
+        <h2>Регистрация</h2>
+        <input type="text" id="reg-username" placeholder="Логин" />
+        <input type="password" id="reg-password" placeholder="Пароль" />
+        <button id="register-btn">Зарегистрироваться</button>
+        <div id="auth-error" style="color: red; display: none;"></div>
+    </div>
+    <div id="rooms-section" style="display: none;">
+        <h2>Ваши комнаты</h2>
+        <div id="rooms-list"></div>
+        <button id="create-room-btn">Создать комнату</button>
+        <input type="text" id="room-name-input" placeholder="Название комнаты" />
+        <button id="logout-btn">Выйти</button>
+    </div>
+    <div id="editor-section" style="display: none;">
+        <p>Комната: <span id="current-room"></span></p>
+        <div style="display: flex; margin-bottom: 10px;">
+            <div id="scripts-panel" style="width: 200px; border: 1px solid #ccc; padding: 10px; margin-right: 10px;">
+                <h3>Скрипты</h3>
+                <div id="scripts-list"></div>
+                <button id="new-script" style="margin-top: 10px;">+ Новый</button>
+                <button id="save-scripts" style="margin-top: 10px;">Сохранить</button>
+            </div>
+            <div style="flex: 1;">
+                <div id="code-editor"></div>
+            </div>
+        </div>
+        <div id="no-scripts-message" style="display: none; color: #555; padding: 20px; border: 1px dashed #999; border-radius: 4px; margin-bottom: 10px;">
+            Нет ни одного скрипта. Создайте новый скрипт, чтобы начать редактирование.
+        </div>
+        <div id="execution-section">
+            <button id="run-button">Запустить код</button>
+            <button id="stop-button" disabled>Остановить процесс</button>
+            <div class="status" id="status">Подключение...</div>
+
+            <h2>Терминал</h2>
+            <div id="terminal-window" style="background-color: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; font-family: 'Courier New', monospace; white-space: pre-wrap; min-height: 200px; max-height: 350px; overflow-y: auto;"></div>
+            <input id="terminal-input" type="text" placeholder="Введите текст и нажмите Enter" style="width: 100%; padding: 10px; margin-top: 10px; font-family: 'Courier New', monospace; font-size: 14px;" autocomplete="off" />
+        </div>
+    </div>
+
+    <!-- CodeMirror JS -->
+    <script src="/static/codemirror/codemirror.min.js"></script>
+    <script src="/static/codemirror/python.min.js"></script>
+    <script src="/static/js/common.js"></script>
+
+    <script>
+        let editor;
+        const status = document.getElementById('status');
+        let ws;
+        let ignoreChanges = false;
+        let currentRoom = null;
+        let scripts = {};
+        let currentScript = "main.py";
+        let processRunning = false;
+        let token = localStorage.getItem('token');
+
+        // Получаем комнату из URL
+        const urlParams = new URLSearchParams(window.location.search);
+        currentRoom = urlParams.get('room');
+
+        if (currentRoom) {
+            // Показываем редактор
+            document.getElementById('auth-section').style.display = 'none';
+            document.getElementById('rooms-section').style.display = 'none';
+            document.getElementById('editor-section').style.display = 'block';
+            document.getElementById('current-room').textContent = 'Загрузка... (' + currentRoom + ')';
+            initEditor();
+            connect();
+        } else if (token) {
+            showRooms();
+        } else {
+            showAuth();
+        }
+
+        function showAuth() {
+            document.getElementById('auth-section').style.display = 'block';
+            document.getElementById('rooms-section').style.display = 'none';
+            document.getElementById('editor-section').style.display = 'none';
+        }
+
+        function showRooms() {
+            document.getElementById('auth-section').style.display = 'none';
+            document.getElementById('rooms-section').style.display = 'block';
+            document.getElementById('editor-section').style.display = 'none';
+            loadRooms();
+        }
+
+        // Скрываем ошибку при вводе
+        document.getElementById('room-name').addEventListener('input', function() {
+            document.getElementById('error-message').style.display = 'none';
+        });
+        document.getElementById('room-code').addEventListener('input', function() {
+            document.getElementById('error-message').style.display = 'none';
+        });
+
+        function loadRooms() {
+            fetch('/rooms', {
+                headers: {
+                    'Authorization': 'Bearer ' + token
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                const roomsList = document.getElementById('rooms-list');
+                roomsList.innerHTML = '';
+                data.forEach(room => {
+                    const roomDiv = document.createElement('div');
+                    roomDiv.innerHTML = `<a href="?room=${room.id}">${room.name}</a>`;
+                    roomsList.appendChild(roomDiv);
+                });
+            })
+            .catch(error => console.error('Error loading rooms:', error));
+        }
+
+        // Логин
+        document.getElementById('login-btn').addEventListener('click', function() {
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            fetch('/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: new URLSearchParams({
+                    username: username,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.access_token) {
+                    token = data.access_token;
+                    localStorage.setItem('token', token);
+                    showRooms();
+                } else {
+                    document.getElementById('auth-error').textContent = 'Неверный логин или пароль';
+                    document.getElementById('auth-error').style.display = 'block';
+                }
+            })
+            .catch(error => {
+                document.getElementById('auth-error').textContent = 'Ошибка авторизации';
+                document.getElementById('auth-error').style.display = 'block';
+            });
+        });
+
+        // Регистрация
+        document.getElementById('register-btn').addEventListener('click', function() {
+            const username = document.getElementById('reg-username').value;
+            const password = document.getElementById('reg-password').value;
+            fetch('/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    username: username,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.message) {
+                    uiToast('Регистрация успешна', 'success');
+                } else {
+                    document.getElementById('auth-error').textContent = 'Ошибка регистрации';
+                    document.getElementById('auth-error').style.display = 'block';
+                }
+            })
+            .catch(error => {
+                document.getElementById('auth-error').textContent = 'Ошибка регистрации';
+                document.getElementById('auth-error').style.display = 'block';
+            });
+        });
+
+        // Создать комнату
+        document.getElementById('create-room-btn').addEventListener('click', function() {
+            const name = document.getElementById('room-name-input').value;
+            if (!name) {
+                uiToast('Введите название комнаты', 'warning');
+                return;
+            }
+            fetch('/create-room', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + token
+                },
+                body: JSON.stringify({
+                    name: name
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.id) {
+                    loadRooms();
+                    document.getElementById('room-name-input').value = '';
+                } else {
+                    uiToast('Ошибка создания комнаты', 'error');
+                }
+            })
+            .catch(error => uiToast('Ошибка создания комнаты', 'error'));
+        });
+
+        // Выйти
+        document.getElementById('logout-btn').addEventListener('click', function() {
+            localStorage.removeItem('token');
+            token = null;
+            showAuth();
+        });
+
+        function initEditor() {
+            editor = CodeMirror(document.getElementById('code-editor'), {
+                value: '# Введите ваш Python код здесь\nprint(\'Hello, World!\')',
+                mode: 'python',
+                theme: 'dracula',
+                lineNumbers: true,
+                indentUnit: 4,
+                smartIndent: true,
+                lineWrapping: true,
+                autofocus: true
+            });
+
+            editor.on('change', function(cm, change) {
+                if (!ignoreChanges && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        script: currentScript,
+                        code: cm.getValue()
+                    }));
+                }
+            });
+        }
+
+        function connect() {
+            ws = new WebSocket('ws://localhost:8000/ws/' + currentRoom);
+
+            ws.onopen = function(event) {
+                status.textContent = 'Подключено';
+                status.style.color = 'green';
+            };
+
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.scripts) {
+                    scripts = data.scripts;
+                    updateScriptsList();
+                    updateEditorVisibility();
+                    // Если текущий скрипт не существует, выбрать первый
+                    if (!(currentScript in scripts)) {
+                        currentScript = Object.keys(scripts)[0] || "";
+                    }
+                    if (currentScript) {
+                        loadScript(currentScript);
+                    }
+                }
+                if (data.script && data.code !== undefined) {
+                    scripts[data.script] = data.code;
+                    if (data.script === currentScript) {
+                        loadScript(currentScript);
+                    }
+                    updateScriptsList();
+                }
+                if (data.type === 'script_deleted') {
+                    if (data.script === currentScript) {
+                        currentScript = Object.keys(scripts)[0] || "";
+                        if (currentScript) {
+                            loadScript(currentScript);
+                        }
+                    }
+                    updateScriptsList();
+                    updateEditorVisibility();
+                }
+                if (data.type === 'script_renamed') {
+                    if (currentScript === data.old_name) {
+                        currentScript = data.new_name;
+                    }
+                    updateScriptsList();
+                    updateEditorVisibility();
+                    loadScript(currentScript);
+                }
+                if (data.type === 'process_started') {
+                    processRunning = true;
+                    document.getElementById('status').textContent = 'Выполняется: ' + data.script;
+                    document.getElementById('run-button').disabled = true;
+                    document.getElementById('stop-button').disabled = false;
+                    appendTerminalText('[Запуск скрипта ' + data.script + ']\n', 'system');
+                }
+                if (data.type === 'process_output') {
+                    appendTerminalText(data.text, 'output');
+                }
+                if (data.type === 'process_finished') {
+                    processRunning = false;
+                    document.getElementById('status').textContent = 'Завершено: код ' + data.returncode;
+                    document.getElementById('run-button').disabled = false;
+                    document.getElementById('stop-button').disabled = true;
+                    appendTerminalText('\n[Процесс завершён, код ' + data.returncode + ']\n', 'system');
+                }
+                if (data.type === 'process_error') {
+                    processRunning = false;
+                    document.getElementById('status').textContent = 'Ошибка процесса';
+                    document.getElementById('run-button').disabled = false;
+                    document.getElementById('stop-button').disabled = true;
+                    appendTerminalText('[Ошибка] ' + data.message + '\n', 'system');
+                }
+                if (data.type === 'saved') {
+                    uiToast('Скрипты сохранены', 'success');
+                }
+            };
+
+            ws.onclose = function(event) {
+                status.textContent = 'Отключено. Переподключение...';
+                status.style.color = 'red';
+                setTimeout(connect, 1000);
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function updateScriptsList() {
+            const list = document.getElementById('scripts-list');
+            list.innerHTML = '';
+            for (const name in scripts) {
+                const div = document.createElement('div');
+                div.style.display = 'flex';
+                div.style.alignItems = 'center';
+                div.style.padding = '5px';
+                div.style.border = '1px solid #555';
+                div.style.margin = '2px 0';
+
+                const nameDiv = document.createElement('div');
+                nameDiv.textContent = name;
+                nameDiv.style.cursor = 'pointer';
+                nameDiv.style.flexGrow = '1';
+                if (name === currentScript) {
+                    nameDiv.style.backgroundColor = '#555';
+                }
+                nameDiv.addEventListener('click', function() {
+                    selectScript(name);
+                });
+                div.appendChild(nameDiv);
+
+                {
+                    const renameBtn = document.createElement('button');
+                    renameBtn.textContent = 'Переименовать';
+                    renameBtn.style.marginLeft = '5px';
+                    renameBtn.addEventListener('click', async function(e) {
+                        e.stopPropagation();
+                        const newName = await uiPrompt('Введите новое имя файла.', {
+                            title: 'Переименовать скрипт',
+                            value: name,
+                            placeholder: 'example.py',
+                            confirmText: 'Переименовать'
+                        });
+                        if (newName && newName !== name && newName.endsWith('.py') && !scripts[newName] && name in scripts) {
+                            fetch(`/room/${currentRoom}/script/${name}`, {
+                                method: 'PUT',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({new_name: newName})
+                            }).then(() => {
+                                // Локальное обновление
+                                scripts[newName] = scripts[name];
+                                delete scripts[name];
+                                if (currentScript === name) {
+                                    currentScript = newName;
+                                }
+                                updateScriptsList();
+                                loadScript(currentScript);
+                            }).catch(() => {
+                                uiToast('Ошибка переименования', 'error');
+                            });
+                        } else if (newName === name) {
+                            uiToast('Имя не изменилось', 'warning');
+                        } else if (!newName.endsWith('.py')) {
+                            uiToast('Имя должно заканчиваться на .py', 'warning');
+                        } else if (scripts[newName]) {
+                            uiToast('Скрипт с таким именем уже существует', 'warning');
+                        }
+                    });
+                    div.appendChild(renameBtn);
+
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.textContent = 'Удалить';
+                    deleteBtn.style.marginLeft = '5px';
+                    deleteBtn.addEventListener('click', async function(e) {
+                        e.stopPropagation();
+                        const confirmed = name in scripts && await uiConfirm(`Удалить скрипт ${name}?`, {
+                            title: 'Удаление скрипта',
+                            confirmText: 'Удалить',
+                            danger: true
+                        });
+                        if (confirmed) {
+                            fetch(`/room/${currentRoom}/script/${name}`, {
+                                method: 'DELETE'
+                            }).then(() => {
+                                // Локальное обновление
+                                delete scripts[name];
+                                if (currentScript === name) {
+                                    currentScript = Object.keys(scripts)[0] || "";
+                                }
+                                updateScriptsList();
+                                loadScript(currentScript);
+                            }).catch(() => {
+                                uiToast('Ошибка удаления', 'error');
+                            });
+                        }
+                    });
+                    div.appendChild(deleteBtn);
+                }
+
+                list.appendChild(div);
+            }
+        }
+
+        function selectScript(name) {
+            currentScript = name;
+            loadScript(name);
+            updateScriptsList();
+            updateEditorVisibility();
+        }
+
+        function loadScript(name) {
+            if (name in scripts) {
+                const cursor = editor.getCursor();
+                ignoreChanges = true;
+                editor.setValue(scripts[name]);
+                editor.setCursor(cursor);
+                ignoreChanges = false;
+            } else {
+                ignoreChanges = true;
+                editor.setValue('');
+                ignoreChanges = false;
+            }
+        }
+
+        function updateEditorVisibility() {
+            const hasScripts = Object.keys(scripts).length > 0;
+            document.getElementById('code-editor').style.display = hasScripts ? 'block' : 'none';
+            document.getElementById('execution-section').style.display = hasScripts ? 'block' : 'none';
+            document.getElementById('no-scripts-message').style.display = hasScripts ? 'none' : 'block';
+            document.getElementById('run-button').disabled = !hasScripts || processRunning;
+            document.getElementById('stop-button').disabled = !processRunning;
+        }
+
+        // Новый скрипт
+        document.getElementById('new-script').addEventListener('click', async function() {
+            const name = await uiPrompt('Введите имя нового скрипта.', {
+                title: 'Новый скрипт',
+                value: 'script.py',
+                placeholder: 'script.py',
+                confirmText: 'Создать'
+            });
+            if (name && !scripts[name]) {
+                scripts[name] = '# Новый скрипт\n';
+                currentScript = name;
+                loadScript(name);
+                updateScriptsList();
+                updateEditorVisibility();
+                // Отправить новый скрипт
+                ws.send(JSON.stringify({
+                    script: name,
+                    code: scripts[name]
+                }));
+            }
+        });
+
+        // Сохранить скрипты
+        document.getElementById('save-scripts').addEventListener('click', function() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'save'
+                }));
+            }
+        });
+
+        function appendTerminalText(text, type = 'output') {
+            const terminal = document.getElementById('terminal-window');
+            const span = document.createElement('span');
+            span.className = 'terminal-' + type;
+            span.textContent = text;
+            terminal.appendChild(span);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        document.getElementById('terminal-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const text = this.value;
+                if (!processRunning) {
+                    appendTerminalText('[Нет активного процесса]\n', 'system');
+                } else if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'stdin',
+                        input: text + '\n'
+                    }));
+                    appendTerminalText(text + '\n', 'input');
+                }
+                this.value = '';
+            }
+        });
+
+        document.getElementById('run-button').addEventListener('click', function() {
+            if (!currentScript) {
+                uiToast('Выберите или создайте скрипт для запуска', 'warning');
+                return;
+            }
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                uiToast('Нет соединения с сервером', 'error');
+                return;
+            }
+            document.getElementById('terminal-window').textContent = '';
+            ws.send(JSON.stringify({
+                type: 'run_script',
+                script: currentScript
+            }));
+            document.getElementById('status').textContent = 'Выполнение...';
+            processRunning = true;
+            document.getElementById('run-button').disabled = true;
+        });
+
+        document.getElementById('stop-button').addEventListener('click', function() {
+            if (!processRunning) {
+                return;
+            }
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                uiToast('Нет соединения с сервером', 'error');
+                return;
+            }
+            ws.send(JSON.stringify({
+                type: 'stop_script'
+            }));
+            document.getElementById('status').textContent = 'Остановка...';
+            document.getElementById('stop-button').disabled = true;
+        });
+    </script>
+</body>
+</html>
