@@ -123,6 +123,9 @@
         let scripts = {};
         let currentScript = "main.py";
         let processRunning = false;
+        let localClientId = null;
+        let cursorBroadcastTimer = null;
+        const remoteCursors = new Map();
         const roomIde = document.getElementById('room-ide');
 
         // Получение ID комнаты из URL
@@ -155,16 +158,22 @@
                 }
             });
 
+            editor.on('cursorActivity', function() {
+                scheduleCursorBroadcast();
+            });
+
             setTimeout(() => editor.refresh(), 0);
         }
 
         // Подключение к WebSocket
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${currentRoom}`);
+            const token = encodeURIComponent(getToken() || '');
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${currentRoom}?token=${token}`);
 
             ws.onopen = function(event) {
                 updateConnectionStatus('Подключено к серверу', true);
+                scheduleCursorBroadcast();
             };
 
             ws.onmessage = function(event) {
@@ -173,6 +182,7 @@
 
             ws.onclose = function(event) {
                 updateConnectionStatus('Нет соединения с сервером. Переподключение...', false);
+                clearAllRemoteCursors();
                 setTimeout(connect, 1000);
             };
 
@@ -182,6 +192,13 @@
         }
 
         function handleWebSocketMessage(data) {
+            if (data.type === 'initial_state' && data.client_id) {
+                localClientId = data.client_id;
+                scheduleCursorBroadcast();
+            }
+            if (Array.isArray(data.remote_cursors)) {
+                applyRemoteCursorsSnapshot(data.remote_cursors);
+            }
             if (data.scripts) {
                 scripts = data.scripts;
                 updateScriptsList();
@@ -195,12 +212,16 @@
             }
             if (data.script && data.code !== undefined) {
                 scripts[data.script] = data.code;
+                if (data.sender_client_id) {
+                    markRemoteCursorTyping(data.sender_client_id, data.script);
+                }
                 if (data.script === currentScript) {
                     loadScript(currentScript);
                 }
                 updateScriptsList();
             }
             if (data.type === 'script_deleted') {
+                removeRemoteCursorsForScript(data.script);
                 if (data.script === currentScript) {
                     currentScript = Object.keys(scripts)[0] || "";
                     if (currentScript) {
@@ -211,12 +232,19 @@
                 updateEditorVisibility();
             }
             if (data.type === 'script_renamed') {
+                moveRemoteCursorsToScript(data.old_name, data.new_name);
                 if (currentScript === data.old_name) {
                     currentScript = data.new_name;
                 }
                 updateScriptsList();
                 updateEditorVisibility();
                 loadScript(currentScript);
+            }
+            if (data.type === 'cursor_update') {
+                updateRemoteCursor(data);
+            }
+            if (data.type === 'cursor_remove') {
+                removeRemoteCursor(data.client_id);
             }
             if (data.type === 'process_started') {
                 processRunning = true;
@@ -317,6 +345,7 @@
             updateScriptsList();
             updateEditorVisibility();
             updateEditorFileName();
+            scheduleCursorBroadcast();
         }
 
         function loadScript(name) {
@@ -331,6 +360,209 @@
                 editor.setValue('');
                 ignoreChanges = false;
             }
+            renderRemoteCursorsForCurrentScript();
+            scheduleCursorBroadcast();
+        }
+
+        function scheduleCursorBroadcast() {
+            if (cursorBroadcastTimer) {
+                return;
+            }
+            cursorBroadcastTimer = setTimeout(function() {
+                cursorBroadcastTimer = null;
+                sendOwnCursor();
+            }, 70);
+        }
+
+        function sendOwnCursor() {
+            if (!editor || !currentScript || !localClientId || !ws || ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            const cursor = editor.getCursor();
+            ws.send(JSON.stringify({
+                type: 'cursor_update',
+                script: currentScript,
+                position: {
+                    line: cursor.line,
+                    ch: cursor.ch
+                }
+            }));
+        }
+
+        function getCursorColor(clientId) {
+            let hash = 0;
+            for (let i = 0; i < clientId.length; i += 1) {
+                hash = ((hash << 5) - hash) + clientId.charCodeAt(i);
+                hash |= 0;
+            }
+            const hue = Math.abs(hash) % 360;
+            return `hsl(${hue} 88% 62%)`;
+        }
+
+        function createRemoteCursorWidget(label, color) {
+            const cursorEl = document.createElement('span');
+            cursorEl.className = 'remote-cursor';
+            cursorEl.style.setProperty('--cursor-color', color);
+
+            const badgeEl = document.createElement('span');
+            badgeEl.className = 'remote-cursor-label';
+            badgeEl.style.setProperty('--cursor-color', color);
+            badgeEl.textContent = label || 'Участник';
+            cursorEl.appendChild(badgeEl);
+            return cursorEl;
+        }
+
+        function normalizePosition(position) {
+            const lineCount = editor.lineCount();
+            if (!lineCount) {
+                return { line: 0, ch: 0 };
+            }
+            const line = Math.max(0, Math.min(Number(position?.line) || 0, lineCount - 1));
+            const lineLength = editor.getLine(line)?.length || 0;
+            const ch = Math.max(0, Math.min(Number(position?.ch) || 0, lineLength));
+            return { line, ch };
+        }
+
+        function updateRemoteCursor(data) {
+            if (!data || !data.client_id || data.client_id === localClientId) {
+                return;
+            }
+            let cursorState = remoteCursors.get(data.client_id);
+            if (!cursorState) {
+                cursorState = {
+                    clientId: data.client_id,
+                    script: data.script,
+                    username: data.username || 'Участник',
+                    position: data.position || { line: 0, ch: 0 },
+                    bookmark: null,
+                    element: null,
+                    typingTimer: null,
+                    isTyping: false
+                };
+                remoteCursors.set(data.client_id, cursorState);
+            } else {
+                if (cursorState.bookmark) {
+                    cursorState.bookmark.clear();
+                    cursorState.bookmark = null;
+                }
+                cursorState.script = data.script;
+                cursorState.username = data.username || cursorState.username || 'Участник';
+                cursorState.position = data.position || { line: 0, ch: 0 };
+            }
+
+            if (cursorState.script === currentScript) {
+                renderRemoteCursorMarker(cursorState);
+            }
+        }
+
+        function renderRemoteCursorMarker(cursorState) {
+            if (!editor || cursorState.script !== currentScript) {
+                return;
+            }
+            const pos = normalizePosition(cursorState.position);
+            const color = getCursorColor(cursorState.clientId);
+            const widget = createRemoteCursorWidget(cursorState.username, color);
+            if (cursorState.isTyping) {
+                widget.classList.add('remote-cursor-typing');
+            }
+            cursorState.element = widget;
+            cursorState.bookmark = editor.setBookmark(pos, {
+                widget: widget,
+                insertLeft: true
+            });
+        }
+
+        function renderRemoteCursorsForCurrentScript() {
+            for (const cursorState of remoteCursors.values()) {
+                if (cursorState.bookmark) {
+                    cursorState.bookmark.clear();
+                    cursorState.bookmark = null;
+                }
+                if (cursorState.script === currentScript) {
+                    renderRemoteCursorMarker(cursorState);
+                }
+            }
+        }
+
+        function removeRemoteCursor(clientId) {
+            const cursorState = remoteCursors.get(clientId);
+            if (!cursorState) {
+                return;
+            }
+            if (cursorState.bookmark) {
+                cursorState.bookmark.clear();
+            }
+            if (cursorState.typingTimer) {
+                clearTimeout(cursorState.typingTimer);
+            }
+            remoteCursors.delete(clientId);
+        }
+
+        function removeRemoteCursorsForScript(scriptName) {
+            for (const [clientId, cursorState] of remoteCursors.entries()) {
+                if (cursorState.script === scriptName) {
+                    removeRemoteCursor(clientId);
+                }
+            }
+        }
+
+        function moveRemoteCursorsToScript(oldName, newName) {
+            for (const cursorState of remoteCursors.values()) {
+                if (cursorState.script === oldName) {
+                    if (cursorState.bookmark) {
+                        cursorState.bookmark.clear();
+                        cursorState.bookmark = null;
+                    }
+                    cursorState.script = newName;
+                }
+            }
+            renderRemoteCursorsForCurrentScript();
+        }
+
+        function clearAllRemoteCursors() {
+            for (const cursorState of remoteCursors.values()) {
+                if (cursorState.bookmark) {
+                    cursorState.bookmark.clear();
+                }
+                if (cursorState.typingTimer) {
+                    clearTimeout(cursorState.typingTimer);
+                }
+            }
+            remoteCursors.clear();
+        }
+
+        function applyRemoteCursorsSnapshot(cursors) {
+            clearAllRemoteCursors();
+            for (const cursorData of cursors) {
+                updateRemoteCursor(cursorData);
+            }
+        }
+
+        function markRemoteCursorTyping(clientId, scriptName) {
+            if (!clientId || clientId === localClientId) {
+                return;
+            }
+            const cursorState = remoteCursors.get(clientId);
+            if (!cursorState) {
+                return;
+            }
+            if (scriptName && cursorState.script !== scriptName) {
+                return;
+            }
+            cursorState.isTyping = true;
+            if (cursorState.element) {
+                cursorState.element.classList.add('remote-cursor-typing');
+            }
+            if (cursorState.typingTimer) {
+                clearTimeout(cursorState.typingTimer);
+            }
+            cursorState.typingTimer = setTimeout(function() {
+                cursorState.isTyping = false;
+                if (cursorState.element) {
+                    cursorState.element.classList.remove('remote-cursor-typing');
+                }
+                cursorState.typingTimer = null;
+            }, 420);
         }
 
         function updateEditorVisibility() {

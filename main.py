@@ -77,6 +77,8 @@ class ConnectionManager:
         self.name = name
         self.room_id = room_id
         self.processes: Dict[WebSocket, dict] = {}
+        self.connection_users: Dict[WebSocket, dict] = {}
+        self.cursor_positions: Dict[str, dict] = {}
 
     async def load_room(self):
         room = await rooms_collection.find_one({"id": self.room_id})
@@ -92,19 +94,29 @@ class ConnectionManager:
             upsert=True
         )
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, username: str = "Гость"):
         await websocket.accept()
         if not self.scripts:
             await self.load_room()
+        client_id = str(uuid.uuid4())
+        self.connection_users[websocket] = {
+            "client_id": client_id,
+            "username": username or "Гость"
+        }
         self.active_connections.append(websocket)
         # Отправляем все скрипты
         await websocket.send_json({
             "scripts": self.scripts,
-            "name": self.name
+            "name": self.name,
+            "type": "initial_state",
+            "client_id": client_id,
+            "remote_cursors": list(self.cursor_positions.values())
         })
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        user_info = self.connection_users.pop(websocket, None)
         if websocket in self.processes:
             process_info = self.processes[websocket]
             if process_info['process']:
@@ -112,14 +124,50 @@ class ConnectionManager:
             if process_info['task']:
                 process_info['task'].cancel()
             del self.processes[websocket]
+        if user_info:
+            client_id = user_info["client_id"]
+            if client_id in self.cursor_positions:
+                del self.cursor_positions[client_id]
+            for connection in self.active_connections:
+                asyncio.create_task(connection.send_json({
+                    "type": "cursor_remove",
+                    "client_id": client_id
+                }))
 
-    async def broadcast(self, data: dict):
+    async def broadcast(self, data: dict, source_websocket: Optional[WebSocket] = None):
         if "script" in data and "code" in data:
             self.scripts[data["script"]] = data["code"]
         # Отправляем обновление
         full_data = {**data, "scripts": self.scripts, "name": self.name}
+        if source_websocket and source_websocket in self.connection_users:
+            sender = self.connection_users[source_websocket]
+            full_data["sender_client_id"] = sender["client_id"]
+            full_data["sender_username"] = sender["username"]
         for connection in self.active_connections:
             await connection.send_json(full_data)
+
+    async def broadcast_cursor(self, websocket: WebSocket, data: dict):
+        user_info = self.connection_users.get(websocket)
+        if not user_info:
+            return
+        script = data.get("script")
+        position = data.get("position") or {}
+        if not script:
+            return
+        line = position.get("line")
+        ch = position.get("ch")
+        if not isinstance(line, int) or not isinstance(ch, int):
+            return
+        payload = {
+            "type": "cursor_update",
+            "client_id": user_info["client_id"],
+            "username": user_info["username"],
+            "script": script,
+            "position": {"line": line, "ch": ch}
+        }
+        self.cursor_positions[user_info["client_id"]] = payload
+        for connection in self.active_connections:
+            await connection.send_json(payload)
 
     async def delete_script(self, script_name: str):
         if script_name in self.scripts:
@@ -265,6 +313,16 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
     return user.username
 
+def get_username_from_token(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return None
+    username = payload.get("sub")
+    return username if isinstance(username, str) else None
+
 # Словарь менеджеров по комнатам
 managers: Dict[str, ConnectionManager] = {}
 
@@ -373,7 +431,9 @@ async def join_room(request: JoinRoomRequest, current_user: str = Depends(get_cu
 @app.websocket("/ws/{room}")
 async def websocket_endpoint(room: str, websocket: WebSocket):
     manager = await get_manager(room)
-    await manager.connect(websocket)
+    token = websocket.query_params.get("token")
+    username = get_username_from_token(token) or "Гость"
+    await manager.connect(websocket, username=username)
     try:
         while True:
             data = await websocket.receive_json()
@@ -386,8 +446,10 @@ async def websocket_endpoint(room: str, websocket: WebSocket):
             elif data.get('type') == 'save':
                 await manager.save_room()
                 await websocket.send_json({"type": "saved"})
+            elif data.get('type') == 'cursor_update':
+                await manager.broadcast_cursor(websocket, data)
             else:
-                await manager.broadcast(data)
+                await manager.broadcast(data, source_websocket=websocket)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
