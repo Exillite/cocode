@@ -349,7 +349,7 @@
         }
 
         function connect() {
-            ws = new WebSocket('ws://localhost:8000/ws/' + currentRoom);
+            ws = new WebSocket('ws://localhost:80/ws/' + currentRoom);
 
             ws.onopen = function(event) {
                 status.textContent = 'Подключено';
